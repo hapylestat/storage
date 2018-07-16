@@ -1,0 +1,15 @@
+[Unit]
+Description=MongoDB Storeage Service
+After=syslog.target network-online.target
+
+[Service]
+Type=forking
+User=mongodb
+ExecStart=/usr/bin/mongod -f /usr/srv/_conf/mongodb/mongo.yaml --fork
+
+Restart=on-failure
+RestartSec=4s
+
+
+[Install]
+WantedBy=multi-user.target

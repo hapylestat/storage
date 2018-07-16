@@ -1,0 +1,31 @@
+systemLog:
+  destination: file
+  path: "/var/log/mongodb/mongo_storage.log"
+  logAppend: false
+  quiet: false
+storage:
+  dbPath: "/mnt/etcd_store"
+  directoryPerDB: true
+  engine: "wiredTiger"
+  wiredTiger:
+    engineConfig:
+      journalCompressor: "none"
+    collectionConfig:
+      blockCompressor: "none"
+  journal:
+    enabled: true
+processManagement:
+  fork: true
+net:
+  bindIp: 1.1.1.1
+  port: 27000
+  ipv6: true
+  maxIncomingConnections: 12
+  unixDomainSocket:
+    enabled: false
+  wireObjectCheck: true
+setParameter:
+  enableLocalhostAuthBypass: false
+replication:
+  oplogSizeMB: 50
+
