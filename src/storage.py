@@ -387,7 +387,7 @@ def main(args):
       bucket = None
 
     if bucket and command != StorageCommands.put_cmd:
-      buckets = {item.partition(".")[0] for item in db.list_collection_names()}
+      buckets = {item.rpartition(".")[0] for item in db.list_collection_names()}
       if bucket not in buckets:
         raise ValueError("No such bucket '{}' found, check full list of available buckets using list command with no options". format(bucket))
 
