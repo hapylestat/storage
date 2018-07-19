@@ -62,7 +62,7 @@ def get_buckets(db):
   buckets = {}
   for collection in db.list_collections():
     raw_name = collection["name"]
-    name, _, _ = collection["name"].partition(".")
+    name, _, _ = collection["name"].rpartition(".")
 
     if name not in buckets:
       buckets[name] = {
