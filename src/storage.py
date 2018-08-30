@@ -369,7 +369,7 @@ def get_cmd(ctx):
   except (IndexError, ValueError):
     destination = "."
 
-  files = list(ctx.fs.find({'filename': filename}) if filename else fs.find())
+  files = list(ctx.fs.find({'filename': filename}) if filename else ctx.fs.find())
 
   if not files:
     raise ValueError("Filename '{}' not found in the storage".format(filename))
