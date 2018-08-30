@@ -4,16 +4,21 @@ import gridfs
 import os
 import sys
 
-import time
 import hashlib
-from threading import Thread
 
+from threading import Thread
+from enum import Enum
 
 from pymongo import MongoClient
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import ConfigurationError
 
 # ====================================== CLASSES ==========================================
+
+
+class GridFSTable(Enum):
+  files = "files"
+  chunks = "chunks"
 
 
 class Metaclass(object):
@@ -30,18 +35,38 @@ class PropertiesMeta(type):
                      and isinstance(self.__dict__[item], str))
 
 
+class Context(object):
+  def __init__(self, client=None, db=None, fs=None, args=None, bucket_name=None):
+    """
+    :type client MongoClient
+    :type db MongoDatabase
+    :type fs gridfs.GridFS
+    :type args list
+    :type bucket_name str
+    """
+    self.client = client
+    self.db = db
+    self.fs = fs
+    self.args = args
+    self.bucket_name = bucket_name
+
+
 class SizeScale(object):
-  mb = 1027*1024
+  bytes = 1.0
+  kb = bytes * 1024
+  mb = kb * 1024
+  gb = mb * 1024
+  tb = gb * 1024
+  pb = tb * 1024
 
 
 @Metaclass(PropertiesMeta)
 class StorageCommands(object):
   list_cmd = "ls"
   stats_cmd = "stats"
-  bucket_cmd = "bucket"
   put_cmd = "put"
   get_cmd = "get"
-  del_cmd = "del"
+  del_cmd = "rm"
 
   bucket_consumers = [list_cmd, put_cmd, get_cmd, del_cmd]
 
@@ -50,128 +75,195 @@ class StorageCommands(object):
 class BucketCommands(object):
   list_cmd = StorageCommands.list_cmd
   new_cmd = "new"
-  delete_cmd = "del"
+  delete_cmd = "rm"
+
+
+def scale_file_size(size):
+  """
+  Scales file size according to passed scale rate and returns scaled number and scale name
+
+  :type size int|float
+
+  :rtype set(float, str)
+  """
+  scale_factor = SizeScale.kb
+  _size = size
+  size_type = " b"
+  if size/SizeScale.kb <= scale_factor:
+    _size /= SizeScale.kb
+    size_type = "kb"
+  elif size/SizeScale.mb <= scale_factor:
+    _size /= SizeScale.mb
+    size_type = "mb"
+  elif size/SizeScale.gb <= scale_factor:
+    _size /= SizeScale.gb
+    size_type = "gb"
+  elif size/SizeScale.tb <= scale_factor:
+    _size /= SizeScale.tb
+    size_type = "tb"
+  elif size/SizeScale.pb >= scale_factor:
+    _size /= SizeScale.pb
+    size_type = "pb"
+
+  return _size, size_type
 
 
 # ====================================== COMMANDS ==========================================
 
-def get_buckets(db):
+def get_buckets(ctx):
   """
-  :type db MongoDatabase
+  :type ctx Context
   """
   buckets = {}
-  for collection in db.list_collections():
+  for collection in ctx.db.list_collections():
     raw_name = collection["name"]
+    """:type raw_name str"""
+    try:
+      record_type = GridFSTable(raw_name.rpartition(".")[2])
+    except ValueError:
+      record_type = None
+
+    col_stats = ctx.db.command("collStats", raw_name, scale=SizeScale.bytes)
     name, _, _ = collection["name"].rpartition(".")
 
     if name not in buckets:
       buckets[name] = {
-        'size': 0,
-        'raw': []
+        "size": 0,
+        "size_type": " b",
+        "files": 0,
+        "date": "????-??-?? ??:??:??",
+        "raw": []
       }
 
-    buckets[name]['size'] += int(db.command("collStats", raw_name, scale=SizeScale.mb)["size"])
-    buckets[name]['raw'].append(raw_name)
+    bucket = buckets[name]
+    if record_type == GridFSTable.chunks:
+      bucket["size"] += col_stats["size"]
+    elif record_type == GridFSTable.files:
+      bucket["files"] = col_stats["count"]
+      if bucket["files"] > 0:
+        try:
+          collection_upload_time = list(ctx.db.get_collection(raw_name).find(limit=1))[0]["uploadDate"]
+          """:type collection_upload_time datetime"""
+          bucket["date"] = "{0:%Y-%m-%d %H:%M:%S}".format(collection_upload_time)
+
+        except IndexError:
+          pass
+
+    bucket["raw"].append(raw_name)
+
+  # re-calculate size scaling
+  for bucket in buckets.values():
+    bucket["size"], bucket["size_type"] = scale_file_size(bucket["size"])
 
   return buckets
 
 
-def list_buckets_command(db):
+def list_buckets_command(ctx):
   """
-  :type db MongoDatabase
+  :type ctx Context
   """
-  buckets = get_buckets(db)
+  buckets = get_buckets(ctx)
 
-  for bucket_name, bucket_size in buckets.items():
-    print("{0:20}   {1:10} Mb".format(bucket_name, bucket_size['size']))
+  for bucket_name, metainfo in buckets.items():
+    print(f"{metainfo['files']:032d} d {metainfo['size']:7.2f} {metainfo['size_type']} {metainfo['date']} {bucket_name}")
 
 
-def bucket_command(db, args):
+def bucket_command(ctx):
   """
   args: check BucketCommands
 
   BucketCommands.delete_cmd:
     args: name
 
-  :type db MongoDatabase
-  :type args list
+  :type ctx Context
   """
   try:
-    command = args.pop(0)
+    command = ctx.args.pop(0)
   except IndexError:
     raise ValueError("Supported bucket commands: {}".format(BucketCommands))
 
   if command == BucketCommands.list_cmd:
-    list_buckets_command(db)
+    list_buckets_command(ctx)
   elif command == BucketCommands.new_cmd:
     raise ValueError("No creation needed, just put file in the desired bucket. It will be created if not exists")
   elif command == BucketCommands.delete_cmd:
     try:
-      name = args.pop(0)
+      name = ctx.args.pop(0)
     except IndexError:
       raise ValueError("No bucket name passed")
 
-    bucket = get_buckets(db)
+    bucket = get_buckets(ctx)
     if name not in bucket:
       raise ValueError("No bucket with name '{}' found".format(name))
 
     raw_names = bucket[name]['raw']
     for raw_name in raw_names:
-      db.drop_collection(raw_name)
+      ctx.db.drop_collection(raw_name)
 
   else:
     raise ValueError("Unknown command '{}'".format(command))
 
 
-def list_cmd(db, fs, args):
+def list_cmd(ctx):
   """
   optional: bucket name
 
-  :type db MongoDatabase
-  :type fs gridfs.GridFS
-  :type args list
+  :type ctx Context
   """
-  if not fs:
-    list_buckets_command(db)
+  if not ctx.fs:
+    list_buckets_command(ctx)
     return
 
-  for f in fs.find():
-    print("{3:33}  {1:10.2f} Mb  {2:%Y-%m-%d %H:%M:%S}   {0:>30}".format(
-      f.filename, f.length / SizeScale.mb, f.upload_date, f.md5))
+  for f in ctx.fs.find():
+    flen, flen_type = scale_file_size(f.length)
+    print("{3:32} f {1:7.2f} {4} {2:%Y-%m-%d %H:%M:%S} {0}".format(
+      f.filename, flen, f.upload_date, f.md5, flen_type))
 
 
-def print_io_status(filename, total_size, f_obj):
+def print_io_status(filename, total_sz, f_obj):
   """
   :type filename str
-  :type total_size int
+  :type total_sz int
   :type f_obj io.BytesIO
   """
+  from time import time, sleep
 
-  current_pos = 0
-  total_size = float(total_size)
-  while not f_obj.closed and current_pos < total_size:
-    current_pos = f_obj.tell()
-    left_percents = round((current_pos / total_size) * 100)
+  threshold = 0.3
 
-    sys.stdout.write("\r{0} --> {1:.2f}/{2:.2f} Mb ({3:3d}%)".format(
-      filename,
-      current_pos/SizeScale.mb,
-      total_size/SizeScale.mb,
-      left_percents))
-    time.sleep(0.3)
+  current_sz = 0
+  total_sz = float(total_sz)
+  total_sz_scale, total_sz_name = scale_file_size(total_sz)
+  time_watched_prev = time()
+  prev_sz = f_obj.tell()
+  speed = 0
+  speed_n = " b"
+
+  while not f_obj.closed and current_sz < total_sz:
+    current_sz = f_obj.tell()
+
+    time_watched = time()
+    time_delta = time_watched - time_watched_prev
+    if time_delta >= threshold:
+      speed, speed_n = scale_file_size((current_sz - prev_sz) / time_delta)
+      time_watched_prev = time_watched
+      prev_sz = current_sz
+
+    left_percents = round((current_sz / total_sz) * 100)
+    current_sz_scale, curr_sz_type = scale_file_size(current_sz)
+
+    sys.stdout.write(f"\r{filename} --> {current_sz_scale:>6.2f} {curr_sz_type}/{total_sz_scale:.2f} {total_sz_name} ({left_percents:3d}%) {speed:6.2f}{speed_n}/s")
+    sleep(0.15)
 
 
-def put_cmd(db, fs, args):
+def put_cmd(ctx):
   """
   args: bucket name, source
   optional: filename
 
-  :type db MongoDatabase
-  :type fs gridfs.GridFS
-  :type args list
+  :type ctx Context
   """
   try:
-    source = args.pop(0)
+    source = ctx.args.pop(0)
     if not source:
       raise ValueError("No source filename passed")
   except (IndexError, ValueError):
@@ -180,7 +272,7 @@ def put_cmd(db, fs, args):
   full_file_path = os.path.abspath(source)
 
   try:
-    filename = args.pop(0)
+    filename = ctx.args.pop(0)
   except IndexError:
     filename = os.path.basename(full_file_path)
 
@@ -194,7 +286,7 @@ def put_cmd(db, fs, args):
     th = Thread(target=print_io_status, args=(filename, fsize, f))
     th.start()
 
-    stream = fs.new_file(filename=filename)
+    stream = ctx.fs.new_file(filename=filename)
 
     chunk_size = stream.chunk_size
     total_chunked_size = int(fsize / chunk_size) * chunk_size
@@ -227,59 +319,57 @@ def put_cmd(db, fs, args):
 
   sys.stdout.write("\r" + " "*80)
   if stream.md5 != hash.hexdigest():
-    fs.delete(stream._id)
+    ctx.fs.delete(stream._id)
     print("\r{}".format("failed, local hash didn't match server one"))
   else:
-    for f in fs.find({'filename': filename}):  # remove previous versions of the file
+    for f in ctx.fs.find({'filename': filename}):  # remove previous versions of the file
       if f._id != stream._id:
-        fs.delete(f._id)
+        ctx.fs.delete(f._id)
 
     print("\r{}".format("{} transferred".format(filename)))
 
 
-def del_cmd(db, fs, args):
+def del_cmd(ctx):
   """
   args: bucket name, filename
 
-  :type db MongoDatabase
-  :type fs gridfs.GridFS
-  :type args list
+  :type ctx Context
   """
   try:
-    filename = args.pop(0)
+    filename = ctx.args.pop(0)
   except (IndexError, ValueError):
-    raise ValueError("No filename passed")
+    ctx.args = [BucketCommands.delete_cmd, ctx.bucket_name]
+    bucket_command(ctx)
+    return
 
-  files = list(fs.find({'filename': filename}))
+  files = list(ctx.fs.find({'filename': filename}))
 
   if not files:
     raise ValueError("Filename '{}' not found in the storage".format(filename))
 
-  fs.delete(files[0]._id)
+  ctx.fs.delete(files[0]._id)
 
 
-def get_cmd(db, fs, args):
+def get_cmd(ctx):
   """
   args: bucket name, filename
   optional: destination
 
-  :type db MongoDatabase
-  :type fs gridfs.GridFS
-  :type args list
+  :type ctx Context
   """
   try:
-    filename = args.pop(0)
+    filename = ctx.args.pop(0)
   except (IndexError, ValueError):
     filename = None
 
   try:
     if not filename:
       raise IndexError()
-    destination = args.pop(0)
+    destination = ctx.args.pop(0)
   except (IndexError, ValueError):
     destination = "."
 
-  files = list(fs.find({'filename': filename}) if filename else fs.find())
+  files = list(ctx.fs.find({'filename': filename}) if filename else fs.find())
 
   if not files:
     raise ValueError("Filename '{}' not found in the storage".format(filename))
@@ -336,15 +426,14 @@ def get_cmd(db, fs, args):
       print("\r{}".format("{} transferred".format(os.path.basename(dest))))
 
 
-def stats_cmd(client, db):
+def stats_cmd(ctx):
   """
    args: none
 
-  :type client MongoClient
-  :type db MongoDatabase
+  :type ctx Context
   """
-  db_version = client.server_info()["version"]
-  db_stats = db.command("dbStats", 1, scale=SizeScale.mb)
+  db_version = ctx.client.server_info()["version"]
+  db_stats = ctx.db.command("dbStats", 1, scale=SizeScale.mb)
 
   db_name = db_stats["db"] if db_stats and "db" in db_stats else "<unknown>"
   storage_size = db_stats["storageSize"] if db_stats and "storageSize" in db_stats else -1
@@ -359,6 +448,13 @@ collections : {4}\n""".format(db_version, db_name, storage_size, data_size, coll
 
 
 # ====================================== BASE STUFF ==========================================
+AVAILABLE_COMMANDS = {
+  StorageCommands.list_cmd: list_cmd,
+  StorageCommands.put_cmd: put_cmd,
+  StorageCommands.get_cmd: get_cmd,
+  StorageCommands.del_cmd: del_cmd,
+  StorageCommands.stats_cmd: stats_cmd
+}
 
 
 def main(args):
@@ -382,6 +478,9 @@ def main(args):
   if command in StorageCommands.bucket_consumers:  # if yes, second argument should be bucket name
     try:
       bucket = args.pop(0)
+
+      if os.path.exists(bucket) and len(args) == 0:
+        raise ValueError("You can't pass filename here, please supply properly formatted command after consulting with help")
     except IndexError:
       command = StorageCommands.list_cmd
       bucket = None
@@ -393,18 +492,10 @@ def main(args):
 
   fs = gridfs.GridFS(db, collection=str(bucket)) if bucket else None
 
-  if command == StorageCommands.list_cmd:
-    list_cmd(db, fs, args)
-  elif command == StorageCommands.stats_cmd:
-    stats_cmd(mongodb, db)
-  elif command == StorageCommands.bucket_cmd:
-    bucket_command(db, args)
-  elif command == StorageCommands.put_cmd:
-    put_cmd(db, fs, args)
-  elif command == StorageCommands.get_cmd:
-    get_cmd(db, fs, args)
-  elif command == StorageCommands.del_cmd:
-    del_cmd(db, fs, args)
+  ctx = Context(client=mongodb, db=db, fs=fs, bucket_name=bucket, args=args)
+
+  if command in AVAILABLE_COMMANDS:
+    AVAILABLE_COMMANDS[command](ctx)
   else:
     raise ValueError("Unknown command '{}'".format(command))
 
