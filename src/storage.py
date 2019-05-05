@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 
-import gridfs
 import os
 import sys
-
 import hashlib
 
 from threading import Thread
-from enum import Enum
-
-from pymongo import MongoClient
-from pymongo.database import Database as MongoDatabase
-from pymongo.errors import ConfigurationError
 
 # ====================================== CLASSES ==========================================
-
-
-class GridFSTable(Enum):
-  files = "files"
-  chunks = "chunks"
+from storages import StorageFactory, GenericStorage
+from storages.generic import SizeScale
 
 
 class Metaclass(object):
@@ -36,28 +26,15 @@ class PropertiesMeta(type):
 
 
 class Context(object):
-  def __init__(self, client=None, db=None, fs=None, args=None, bucket_name=None):
+  def __init__(self, db=None, args=None, bucket_name=None):
     """
-    :type client MongoClient
-    :type db MongoDatabase
-    :type fs gridfs.GridFS
+    :type db GenericStorage
     :type args list
     :type bucket_name str
     """
-    self.client = client
     self.db = db
-    self.fs = fs
     self.args = args
     self.bucket_name = bucket_name
-
-
-class SizeScale(object):
-  bytes = 1.0
-  kb = bytes * 1024
-  mb = kb * 1024
-  gb = mb * 1024
-  tb = gb * 1024
-  pb = tb * 1024
 
 
 @Metaclass(PropertiesMeta)
@@ -78,94 +55,17 @@ class BucketCommands(object):
   delete_cmd = "rm"
 
 
-def scale_file_size(size):
-  """
-  Scales file size according to passed scale rate and returns scaled number and scale name
-
-  :type size int|float
-
-  :rtype set(float, str)
-  """
-  scale_factor = SizeScale.kb
-  _size = size
-  size_type = " b"
-  if size/SizeScale.kb <= scale_factor:
-    _size /= SizeScale.kb
-    size_type = "kb"
-  elif size/SizeScale.mb <= scale_factor:
-    _size /= SizeScale.mb
-    size_type = "mb"
-  elif size/SizeScale.gb <= scale_factor:
-    _size /= SizeScale.gb
-    size_type = "gb"
-  elif size/SizeScale.tb <= scale_factor:
-    _size /= SizeScale.tb
-    size_type = "tb"
-  elif size/SizeScale.pb >= scale_factor:
-    _size /= SizeScale.pb
-    size_type = "pb"
-
-  return _size, size_type
-
-
 # ====================================== COMMANDS ==========================================
-
-def get_buckets(ctx):
-  """
-  :type ctx Context
-  """
-  buckets = {}
-  for collection in ctx.db.list_collections():
-    raw_name = collection["name"]
-    """:type raw_name str"""
-    try:
-      record_type = GridFSTable(raw_name.rpartition(".")[2])
-    except ValueError:
-      record_type = None
-
-    col_stats = ctx.db.command("collStats", raw_name, scale=SizeScale.bytes)
-    name, _, _ = collection["name"].rpartition(".")
-
-    if name not in buckets:
-      buckets[name] = {
-        "size": 0,
-        "size_type": " b",
-        "files": 0,
-        "date": "????-??-?? ??:??:??",
-        "raw": []
-      }
-
-    bucket = buckets[name]
-    if record_type == GridFSTable.chunks:
-      bucket["size"] += col_stats["size"]
-    elif record_type == GridFSTable.files:
-      bucket["files"] = col_stats["count"]
-      if bucket["files"] > 0:
-        try:
-          collection_upload_time = list(ctx.db.get_collection(raw_name).find(limit=1))[0]["uploadDate"]
-          """:type collection_upload_time datetime"""
-          bucket["date"] = "{0:%Y-%m-%d %H:%M:%S}".format(collection_upload_time)
-
-        except IndexError:
-          pass
-
-    bucket["raw"].append(raw_name)
-
-  # re-calculate size scaling
-  for bucket in buckets.values():
-    bucket["size"], bucket["size_type"] = scale_file_size(bucket["size"])
-
-  return buckets
-
 
 def list_buckets_command(ctx):
   """
   :type ctx Context
   """
-  buckets = get_buckets(ctx)
+  buckets = ctx.db.bucket_list()
 
-  for bucket_name, metainfo in buckets.items():
-    print(f"{metainfo['files']:032d} d {metainfo['size']:7.2f} {metainfo['size_type']} {metainfo['date']} {bucket_name}")
+  for bucket in buckets:
+
+    print(f"{bucket.files:032d} d {bucket.size.size:7.2f} {bucket.size.scale_name} {bucket.date} {bucket.name}")
 
 
 def bucket_command(ctx):
@@ -180,44 +80,38 @@ def bucket_command(ctx):
   try:
     command = ctx.args.pop(0)
   except IndexError:
-    raise ValueError("Supported bucket commands: {}".format(BucketCommands))
+    raise ValueError("Supported database commands: {}".format(BucketCommands))
 
   if command == BucketCommands.list_cmd:
     list_buckets_command(ctx)
   elif command == BucketCommands.new_cmd:
-    raise ValueError("No creation needed, just put file in the desired bucket. It will be created if not exists")
+    raise ValueError("No creation needed, just put file in the desired database. It will be created if not exists")
   elif command == BucketCommands.delete_cmd:
     try:
       name = ctx.args.pop(0)
     except IndexError:
-      raise ValueError("No bucket name passed")
+      raise ValueError("No database name passed")
 
-    bucket = get_buckets(ctx)
-    if name not in bucket:
-      raise ValueError("No bucket with name '{}' found".format(name))
+    if not ctx.db.bucket_exists(name):
+      raise ValueError("No database with name '{}' found".format(name))
 
-    raw_names = bucket[name]['raw']
-    for raw_name in raw_names:
-      ctx.db.drop_collection(raw_name)
-
+    ctx.db.drop_bucket(name)
   else:
     raise ValueError("Unknown command '{}'".format(command))
 
 
 def list_cmd(ctx):
   """
-  optional: bucket name
+  optional: database name
 
   :type ctx Context
   """
-  if not ctx.fs:
+  if not ctx.bucket_name:
     list_buckets_command(ctx)
     return
 
-  for f in ctx.fs.find():
-    flen, flen_type = scale_file_size(f.length)
-    print("{3:32} f {1:7.2f} {4} {2:%Y-%m-%d %H:%M:%S} {0}".format(
-      f.filename, flen, f.upload_date, f.md5, flen_type))
+  for f in ctx.db.list(ctx.bucket_name):
+    print(f)
 
 
 def print_io_status(filename, total_sz, f_obj):
@@ -232,7 +126,7 @@ def print_io_status(filename, total_sz, f_obj):
 
   current_sz = 0
   total_sz = float(total_sz)
-  total_sz_scale, total_sz_name = scale_file_size(total_sz)
+  total_sz_scale, total_sz_name = SizeScale.scale(total_sz)
   time_watched_prev = time()
   prev_sz = f_obj.tell()
   speed = 0
@@ -244,12 +138,12 @@ def print_io_status(filename, total_sz, f_obj):
     time_watched = time()
     time_delta = time_watched - time_watched_prev
     if time_delta >= threshold:
-      speed, speed_n = scale_file_size((current_sz - prev_sz) / time_delta)
+      speed, speed_n = SizeScale.scale((current_sz - prev_sz) / time_delta)
       time_watched_prev = time_watched
       prev_sz = current_sz
 
     left_percents = round((current_sz / total_sz) * 100)
-    current_sz_scale, curr_sz_type = scale_file_size(current_sz)
+    current_sz_scale, curr_sz_type = SizeScale.scale(current_sz)
 
     sys.stdout.write(f"\r{filename} --> {current_sz_scale:>6.2f} {curr_sz_type}/{total_sz_scale:.2f} {total_sz_name} ({left_percents:3d}%) {speed:6.2f}{speed_n}/s")
     sleep(0.15)
@@ -257,7 +151,7 @@ def print_io_status(filename, total_sz, f_obj):
 
 def put_cmd(ctx):
   """
-  args: bucket name, source
+  args: database name, source
   optional: filename
 
   :type ctx Context
@@ -286,7 +180,7 @@ def put_cmd(ctx):
     th = Thread(target=print_io_status, args=(filename, fsize, f))
     th.start()
 
-    stream = ctx.fs.new_file(filename=filename)
+    stream = ctx.db.new_file(ctx.bucket_name, filename)
 
     chunk_size = stream.chunk_size
     total_chunked_size = int(fsize / chunk_size) * chunk_size
@@ -319,19 +213,19 @@ def put_cmd(ctx):
 
   sys.stdout.write("\r" + " "*80)
   if stream.md5 != hash.hexdigest():
-    ctx.fs.delete(stream._id)
+    ctx.db.delete(ctx.bucket_name, stream._id)
     print("\r{}".format("failed, local hash didn't match server one"))
   else:
-    for f in ctx.fs.find({'filename': filename}):  # remove previous versions of the file
-      if f._id != stream._id:
-        ctx.fs.delete(f._id)
+    for f in ctx.db.list(ctx.bucket_name, filename):  # remove previous versions of the file
+      if f.fid != stream._id:
+        ctx.db.delete(ctx.bucket_name, f.fid)
 
     print("\r{}".format("{} transferred".format(filename)))
 
 
 def del_cmd(ctx):
   """
-  args: bucket name, filename
+  args: database name, filename
 
   :type ctx Context
   """
@@ -342,17 +236,18 @@ def del_cmd(ctx):
     bucket_command(ctx)
     return
 
-  files = list(ctx.fs.find({'filename': filename}))
+  files = ctx.db.list(ctx.bucket_name, filename)
 
   if not files:
     raise ValueError("Filename '{}' not found in the storage".format(filename))
 
-  ctx.fs.delete(files[0]._id)
+  for f in files:
+    ctx.db.delete(ctx.bucket_name, f)
 
 
 def get_cmd(ctx):
   """
-  args: bucket name, filename
+  args: database name, filename
   optional: destination
 
   :type ctx Context
@@ -369,20 +264,18 @@ def get_cmd(ctx):
   except (IndexError, ValueError):
     destination = "."
 
-  files = list(ctx.fs.find({'filename': filename}) if filename else ctx.fs.find())
+  files = list(ctx.db.list(ctx.bucket_name, filename))
 
   if not files:
     raise ValueError("Filename '{}' not found in the storage".format(filename))
 
-  for stream in files:
-    stream = stream
-    """:type stream GridOut"""
+  for f_record in files:
     dest = os.path.abspath(destination)
     if os.path.isdir(dest) and dest[-1:] != os.path.sep:
       dest = dest + os.path.sep
 
     if not os.path.basename(dest):
-      dest = os.path.join(dest, stream.filename)
+      dest = os.path.join(dest, f_record.filename)
 
     if os.path.exists(dest):
       os.remove(dest)
@@ -390,18 +283,18 @@ def get_cmd(ctx):
     hash = hashlib.md5()
 
     with open(dest, "bw") as f:
-      th = Thread(target=print_io_status, args=(stream.filename, stream.length, f))
+      th = Thread(target=print_io_status, args=(f_record.filename, f_record.stream.size, f))
       th.start()
 
-      chunk_size = stream.chunk_size
-      total_chunked_size = int(stream.length / chunk_size) * chunk_size
-      read_left_size = stream.length - total_chunked_size
+      chunk_size = f_record.stream.chunk_size
+      total_chunked_size = int(f_record.stream.size / chunk_size) * chunk_size
+      read_left_size = f_record.stream.size - total_chunked_size
 
-      assert total_chunked_size + read_left_size == stream.length
+      assert total_chunked_size + read_left_size == f_record.stream.size
 
       while f.tell() < total_chunked_size:
         try:
-          chunk = stream.read(chunk_size)
+          chunk = f_record.stream.read(chunk_size)
           f.write(chunk)
           hash.update(chunk)
         except IOError:
@@ -410,7 +303,7 @@ def get_cmd(ctx):
 
       if read_left_size > 0:
         try:
-          chunk = stream.read(read_left_size)
+          chunk = f_record.stream.read(read_left_size)
           f.write(chunk)
           hash.update(chunk)
         except IOError:
@@ -419,8 +312,8 @@ def get_cmd(ctx):
 
       th.join()
 
-    sys.stdout.write("\r" + " "*80)
-    if stream.md5 != hash.hexdigest():
+    sys.stdout.write("\r" + " " * 80)
+    if f_record.stream.md5 != hash.hexdigest():
       print("\r{}".format("failed, local hash didn't match server one"))
     else:
       print("\r{}".format("{} transferred".format(os.path.basename(dest))))
@@ -432,19 +325,26 @@ def stats_cmd(ctx):
 
   :type ctx Context
   """
-  db_version = ctx.client.server_info()["version"]
-  db_stats = ctx.db.command("dbStats", 1, scale=SizeScale.mb)
+  server_stats = ctx.db.server_stats(SizeScale.bytes)
 
-  db_name = db_stats["db"] if db_stats and "db" in db_stats else "<unknown>"
-  storage_size = db_stats["storageSize"] if db_stats and "storageSize" in db_stats else -1
-  data_size = db_stats["dataSize"] if db_stats and "dataSize" in db_stats else -1
-  collections_count = db_stats["collections"] if db_stats and "collections" in db_stats else -1
+  db_version = server_stats["version"]
+  db_name = server_stats["name"]
+  storage_size = SizeScale(float(server_stats["storage_size"]))
+  data_size = SizeScale(float(server_stats["data_size"]))
+  collections_count = server_stats["collections_count"]
 
-  print("""Server version {0}\n
-db          : {1}
-storage size: {2:.2f} Mb
-data size   : {3:.2f} Mb
-collections : {4}\n""".format(db_version, db_name, storage_size, data_size, collections_count))
+  print("""Server version {db_version}\n
+db          : {db}
+storage size: {ssize:.2f} {ssize_unit}
+data size   : {dsize:.2f} {dsize_unit}
+collections : {collections}\n""".format(
+    db_version=db_version,
+    db=db_name,
+    ssize=storage_size.size,
+    ssize_unit=storage_size.scale_name,
+    dsize=data_size.size,
+    dsize_unit=data_size.scale_name,
+    collections=collections_count))
 
 
 # ====================================== BASE STUFF ==========================================
@@ -467,15 +367,12 @@ def main(args):
   except IndexError:
     raise ValueError("No command provided!")
 
-  mongodb = MongoClient(mongodb_url)
-  try:
-    db = mongodb.get_database()
-  except ConfigurationError as e:
-    raise ValueError("Please check configuration url: {}".format(str(e)))
+  db = StorageFactory.get(mongodb_url)
+  db.connect()
 
   bucket = None
 
-  if command in StorageCommands.bucket_consumers:  # if yes, second argument should be bucket name
+  if command in StorageCommands.bucket_consumers:  # if yes, second argument should be database name
     try:
       bucket = args.pop(0)
 
@@ -486,13 +383,10 @@ def main(args):
       bucket = None
 
     if bucket and command != StorageCommands.put_cmd:
-      buckets = {item.rpartition(".")[0] for item in db.list_collection_names()}
-      if bucket not in buckets:
+      if not db.bucket_exists(bucket):
         raise ValueError("No such bucket '{}' found, check full list of available buckets using list command with no options". format(bucket))
 
-  fs = gridfs.GridFS(db, collection=str(bucket)) if bucket else None
-
-  ctx = Context(client=mongodb, db=db, fs=fs, bucket_name=bucket, args=args)
+  ctx = Context(db=db, bucket_name=bucket, args=args)
 
   if command in AVAILABLE_COMMANDS:
     AVAILABLE_COMMANDS[command](ctx)
@@ -503,7 +397,7 @@ def main(args):
 def help_command():
 
   print("""Command line description:
-    {0} <command> <bucket name> options1...optionsN
+    {0} <command> <database name> options1...optionsN
   """.format(os.path.basename(__file__)))
 
   print("Supported commands: {}".format(StorageCommands))
