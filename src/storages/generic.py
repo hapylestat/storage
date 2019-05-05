@@ -1,4 +1,4 @@
-from types import FunctionType, LambdaType
+from types import LambdaType
 from typing import Dict, Tuple, Iterable, List
 
 from datetime import datetime
@@ -183,7 +183,7 @@ class GenericStorage(object):
     self._options = options
 
   @classmethod
-  def name(cls):
+  def name(cls) -> List[str]:
     raise NotImplementedError()
 
   def connect(self):

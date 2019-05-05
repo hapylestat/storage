@@ -327,24 +327,14 @@ def stats_cmd(ctx):
   """
   server_stats = ctx.db.server_stats(SizeScale.bytes)
 
-  db_version = server_stats["version"]
-  db_name = server_stats["name"]
-  storage_size = SizeScale(float(server_stats["storage_size"]))
-  data_size = SizeScale(float(server_stats["data_size"]))
-  collections_count = server_stats["collections_count"]
+  max_key_len = 0
+  for k in server_stats.keys():
+    if max_key_len < len(k):
+      max_key_len = len(k)
 
-  print("""Server version {db_version}\n
-db          : {db}
-storage size: {ssize:.2f} {ssize_unit}
-data size   : {dsize:.2f} {dsize_unit}
-collections : {collections}\n""".format(
-    db_version=db_version,
-    db=db_name,
-    ssize=storage_size.size,
-    ssize_unit=storage_size.scale_name,
-    dsize=data_size.size,
-    dsize_unit=data_size.scale_name,
-    collections=collections_count))
+  for k, v in server_stats.items():
+    fill_size = max_key_len - len(k)
+    print("{}{}: {}".format(k, " " * fill_size, v))
 
 
 # ====================================== BASE STUFF ==========================================
@@ -358,9 +348,9 @@ AVAILABLE_COMMANDS = {
 
 
 def main(args):
-  mongodb_url = os.environ.get("MONGODB_URL", None)
+  mongodb_url = os.environ.get("STORAGE_URL", None)
   if not mongodb_url:
-    raise ValueError("MONGODB_URL environment variable should be set to value like 'mongodb://[username:password@]host1[:port1][,host2[:port2],...[,hostN[:portN]]][/[database][?options]]'")
+    raise ValueError("STORAGE_URL environment variable should be set to value like 'storage://[username:password@]host1[:port1][,host2[:port2],...[,hostN[:portN]]][/[database][?options]]'")
 
   try:
     command = args.pop(0)

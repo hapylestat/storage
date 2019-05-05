@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List
 
 from storages.generic import GenericStorage, StorageCredentials, FileItemRecord, SizeScale, BucketItemRecord, FileIn, \
   FileOut
@@ -24,12 +24,12 @@ class MongoStorage(GenericStorage):
     super().__init__(host, port, bucket, auth, options)
 
   @classmethod
-  def name(cls):
-    return "mongodb"
+  def name(cls) -> List[str]:
+    return ["mongodb"]
 
   def connect(self):
     url = "{type}://{auth}{host}:{port}/{database}{options}".format(
-      type=self.name(),
+      type=self.name()[0],
       auth="{}:{}@".format(self._auth.user, self._auth.password) if self._auth else "",
       host=self._host,
       port=self._port,
@@ -143,10 +143,13 @@ class MongoStorage(GenericStorage):
   def server_stats(self, scale_factor: float) -> Dict[str, str]:
     db_stats = self._db.command("dbStats", 1, scale=scale_factor)
 
+    ssize = SizeScale(db_stats["storageSize"] if db_stats and "storageSize" in db_stats else -1)
+    dsize = SizeScale(db_stats["dataSize"] if db_stats and "dataSize" in db_stats else -1)
+
     return {
-      "version": self._client.server_info()["version"],
-      "name": db_stats["db"] if db_stats and "db" in db_stats else "<unknown>",
-      "storage_size": db_stats["storageSize"] if db_stats and "storageSize" in db_stats else -1,
-      "data_size": db_stats["dataSize"] if db_stats and "dataSize" in db_stats else -1,
-      "collections_count": db_stats["collections"] if db_stats and "collections" in db_stats else -1
+      "server version": self._client.server_info()["version"],
+      "db": db_stats["db"] if db_stats and "db" in db_stats else "<unknown>",
+      "storage size": f"{ssize.size:.2f} {ssize.scale_name}",
+      "data size": f"{dsize.size:.2f} {dsize.scale_name}",
+      "collections": db_stats["collections"] if db_stats and "collections" in db_stats else -1
     }

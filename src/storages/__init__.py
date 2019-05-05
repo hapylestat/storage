@@ -2,11 +2,16 @@
 
 from .generic import GenericStorage, StorageCredentials
 from .mongodb import MongoStorage
+from .minio import MinIOStorage
 
 
-_STORAGES = {
-  MongoStorage.name(): MongoStorage
-}
+__storages = [MongoStorage, MinIOStorage]
+
+_STORAGES = {}
+
+for storage in __storages:
+  for name in storage.name():
+    _STORAGES[name] = storage
 
 
 class StorageFactory(object):
