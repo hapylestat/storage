@@ -212,9 +212,9 @@ def put_cmd(ctx):
     th.join()
 
   sys.stdout.write("\r" + " "*80)
-  if stream.md5 != hash.hexdigest():
+  if stream.hash_value != hash.hexdigest():
     ctx.db.delete(ctx.bucket_name, stream._id)
-    print("\r{}".format("failed, local hash didn't match server one"))
+    print("\r{}".format("failed, local hash_value didn't match server one"))
   else:
     for f in ctx.db.list(ctx.bucket_name, filename):  # remove previous versions of the file
       if f.fid != stream._id:
@@ -280,7 +280,11 @@ def get_cmd(ctx):
     if os.path.exists(dest):
       os.remove(dest)
 
-    hash = hashlib.md5()
+    supported_hashes = {
+      "md5": hashlib.md5,
+      "sha256": hashlib.sha256
+    }
+    hash = supported_hashes[f_record.stream.hash_type]()
 
     with open(dest, "bw") as f:
       th = Thread(target=print_io_status, args=(f_record.filename, f_record.stream.size, f))
@@ -313,8 +317,8 @@ def get_cmd(ctx):
       th.join()
 
     sys.stdout.write("\r" + " " * 80)
-    if f_record.stream.md5 != hash.hexdigest():
-      print("\r{}".format("failed, local hash didn't match server one"))
+    if f_record.stream.hash_value != hash.hexdigest():
+      print("\r{}".format("failed, local hash_value didn't match server one"))
     else:
       print("\r{}".format("{} transferred".format(os.path.basename(dest))))
 

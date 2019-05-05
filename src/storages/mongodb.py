@@ -114,14 +114,14 @@ class MongoStorage(GenericStorage):
 
     for f in files:
       assert isinstance(f, gridfs.GridOut)
-      f_out = FileOut(f._id, f.chunk_size, f.length, f.md5, f)
+      f_out = FileOut(f._id, f.chunk_size, f.length, "md5", f.md5, f)
 
       yield FileItemRecord(f._id, f.filename, SizeScale(f_out.size), f.upload_date, f.md5, f_out)
 
   def new_file(self, bucket: str, filename: str) -> FileIn:
     fs = self._fs(bucket)
     f = fs.new_file(filename=filename)
-    return FileIn(f.chunk_size, lambda: f._id, lambda: f.md5, f)
+    return FileIn(f.chunk_size, lambda: f._id, lambda: f.hash_value, f)
 
   def delete(self, bucket: str, f: FileItemRecord or str):
     fs = self._fs(bucket)

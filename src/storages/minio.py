@@ -1,10 +1,12 @@
 import json
-from io import StringIO
+from io import StringIO, BytesIO
 from datetime import datetime
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
+
+from urllib3 import HTTPResponse
 
 from storages import GenericStorage
-from storages.generic import SizeScale, FileItemRecord, FileIn, BucketItemRecord, StorageCredentials
+from storages.generic import SizeScale, FileItemRecord, FileIn, BucketItemRecord, StorageCredentials, FileOut
 
 from minio import Minio
 
@@ -116,6 +118,79 @@ class MinIOWebRPC(object):
     return d
 
 
+class MinioStreamOutProxy(FileOut):
+  __f_handle: HTTPResponse = None
+  __client: Minio = None
+
+  def __init__(self, client: Minio, bucket_name: str, filename: str, chunk_size: int, size: int, hash_value: str):
+    def ex():
+      raise NotImplementedError()
+
+    self.__client = client
+    self.filename = filename
+    self.bucket_name = bucket_name
+
+    super().__init__(hash_value, chunk_size, size, "sha256", hash_value, self)
+
+  def __build_proxy(self):
+    self.__f_handle = self.__client.get_object(self.bucket_name, self.filename)
+
+    # hack, which allow to not use extra stat call to get the true hash more early
+    if "X-Amz-Meta-Sha256" in self.__f_handle.headers:
+      self.hash_value = self.__f_handle.headers.get("X-Amz-Meta-Sha256")
+
+    self.close = self.__f_handle.close
+    self.read = self.__f_handle.read
+    self.readline = self.__f_handle.readline
+    self.tell = self.__f_handle.tell
+    self.seek = self.__f_handle.seek
+    self.__iter__ = self.__f_handle.__iter__
+    self.__enter__ = self.__f_handle.__enter__
+    self.__exit__ = self.__f_handle.__exit__
+
+  def read(self, size: Optional[int] = ...) -> bytes:
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.read(size)
+
+  def readline(self, size: int = ...) -> bytes:
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.readline(size)
+
+  def close(self) -> None:
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.close()
+
+  def tell(self) -> int:
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.tell()
+
+  def seek(self, offset: int, whence: int = ...) -> int:
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.seek(offset, whence)
+
+  def __iter__(self):
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.__iter__()
+
+  def __enter__(self):
+    if not self.__f_handle:
+      self.__build_proxy()
+
+    return self.__enter__()
+
+
 class MinIOStorage(GenericStorage):
   _client: Minio = None
   _webrpc: MinIOWebRPC = None
@@ -164,13 +239,21 @@ class MinIOStorage(GenericStorage):
     return self._client.remove_bucket(name)
 
   def list(self, bucket: str, filename: str or None = None) -> Iterable[FileItemRecord]:
-    pass
+    for fobj in self._client.list_objects_v2(bucket_name=bucket, prefix=filename, recursive=True):
+      if fobj.is_dir:  # not supporting paths and directories for now
+        continue
+      hash_value = fobj.etag.partition("-")[0]
+      f = MinioStreamOutProxy(self._client, bucket, fobj.object_name, 1024 * 1024, fobj.size, hash_value)
+      yield FileItemRecord(fobj.object_name, fobj.object_name, SizeScale(fobj.size), fobj.last_modified, hash_value, f)
 
   def new_file(self, bucket: str, filename: str) -> FileIn:
     pass
 
   def delete(self, bucket: str, f: FileItemRecord or object):
-    pass
+    if isinstance(f, FileItemRecord):
+      self._client.remove_object(bucket, f.fid)
+    else:
+      self._client.remove_object(bucket, f)
 
   def stat(self):
     pass

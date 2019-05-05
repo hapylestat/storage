@@ -80,7 +80,7 @@ class BucketItemRecord(object):
 
 
 class FileOut(BytesIO):
-  def __init__(self, _id: object, chunk_size: int, size: int, md5: str, f):
+  def __init__(self, _id: object, chunk_size: int, size: int, hash_type: str, hash_value: str, f):
     def ex():
       raise NotImplementedError()
 
@@ -88,7 +88,8 @@ class FileOut(BytesIO):
 
     self.size = size
     self.chunk_size = chunk_size
-    self.md5 = md5
+    self.hash_type = hash_type
+    self.hash_value = hash_value
     self._id = _id
 
     # overrides
@@ -107,7 +108,7 @@ class FileOut(BytesIO):
 
 
 class FileIn(BytesIO):
-  def __init__(self, chunk_size: int, fid: LambdaType, md5: LambdaType, f):
+  def __init__(self, chunk_size: int, fid: LambdaType, hash_value: LambdaType, f):
     def ex():
       raise NotImplementedError()
 
@@ -115,7 +116,7 @@ class FileIn(BytesIO):
 
     self.chunk_size = chunk_size
     self._fid = fid
-    self._md5 = md5
+    self._hash_value = hash_value
 
     # overrides
     self.close = f.close
@@ -134,8 +135,8 @@ class FileIn(BytesIO):
     self.readlines = lambda: ex()
 
   @property
-  def md5(self):
-    return self._md5()
+  def hash_value(self):
+    return self._hash_value()
 
   @property
   def _id(self):
@@ -143,12 +144,12 @@ class FileIn(BytesIO):
 
 
 class FileItemRecord(object):
-  def __init__(self, fid: object or None, filename: str, flen: SizeScale, upload_date: datetime, md5: str, f: FileOut):
+  def __init__(self, fid: object or None, filename: str, flen: SizeScale, upload_date: datetime, hash_value: str, f: FileOut):
     self.fid = fid
     self.filename = filename
     self.file_len = flen
     self.upload_date = upload_date
-    self.file_md5 = md5
+    self.file_hash_value = hash_value
     self.stream = f
 
   def __str__(self):
@@ -156,7 +157,7 @@ class FileItemRecord(object):
       self.filename,
       self.file_len.size,
       self.upload_date,
-      self.file_md5,
+      self.file_hash_value,
       self.file_len.scale_name)
 
 
