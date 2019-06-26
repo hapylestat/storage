@@ -5,8 +5,8 @@ from typing import Dict, Iterable, List, Optional
 
 from urllib3 import HTTPResponse
 
-from storages import GenericStorage
-from storages.generic import SizeScale, FileItemRecord, FileIn, BucketItemRecord, StorageCredentials, FileOut
+from . import GenericStorage
+from .generic import SizeScale, FileItemRecord, FileIn, BucketItemRecord, StorageCredentials, FileOut
 
 from minio import Minio
 

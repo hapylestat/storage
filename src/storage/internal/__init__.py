@@ -7,8 +7,11 @@ import hashlib
 from threading import Thread
 
 # ====================================== CLASSES ==========================================
-from storages import StorageFactory, GenericStorage
-from storages.generic import SizeScale
+from storage.internal.storages import StorageFactory, GenericStorage
+from storage.internal.storages.generic import SizeScale
+
+
+__version__ = "1.0.0b0"
 
 
 class Metaclass(object):
@@ -351,17 +354,84 @@ AVAILABLE_COMMANDS = {
 }
 
 
+def get_connection_url():
+  url = os.environ.get("STORAGE_URL", None)
+  if url:
+    return url
+
+  import sys
+  if sys.platform.startswith('java'):
+    import platform
+    os_name = platform.java_ver()[3][0]
+    if os_name.startswith('Windows'):
+      system = 'win32'
+    elif os_name.startswith('Mac'):
+      system = 'darwin'
+    else:
+      system = 'linux2'
+  else:
+    system = sys.platform
+
+  def user_data_dir(appname=None, appauthor=None, version=None):
+    if system == "win32":
+      if appauthor is None:
+        appauthor = appname
+
+      path = os.path.normpath(os.getenv("LOCALAPPDATA", None))
+      if appname:
+        if appauthor is not False:
+          path = os.path.join(path, appauthor, appname)
+        else:
+          path = os.path.join(path, appname)
+    elif system == 'darwin':
+      path = os.path.expanduser('~/Library/Application Support/')
+      if appname:
+        path = os.path.join(path, appname)
+    else:
+      path = os.getenv('XDG_DATA_HOME', os.path.expanduser("~/.local/share"))
+      if appname:
+        path = os.path.join(path, appname)
+    if appname and version:
+      path = os.path.join(path, version)
+
+    return path
+
+  def user_config_dir(appname=None, appauthor=None, version=None):
+    if system == "win32":
+      path = user_data_dir(appname, appauthor, None)
+    elif system == 'darwin':
+      path = os.path.expanduser('~/Library/Preferences/')
+      if appname:
+        path = os.path.join(path, appname)
+    else:
+      path = os.getenv('XDG_CONFIG_HOME', os.path.expanduser("~/.config"))
+      if appname:
+        path = os.path.join(path, appname)
+    if appname and version:
+      path = os.path.join(path, version)
+    return path
+
+  config = os.path.join(user_config_dir("storage", appauthor=False), "storage.conf")
+  try:
+    with open(config, 'r') as f:
+      return f.readline().strip(os.linesep)
+  except IOError:
+    return None
+
+
 def main(args):
-  mongodb_url = os.environ.get("STORAGE_URL", None)
-  if not mongodb_url:
-    raise ValueError("STORAGE_URL environment variable should be set to value like 'storage://[username:password@]host1[:port1][,host2[:port2],...[,hostN[:portN]]][/[database][?options]]'")
+  url = get_connection_url()
+  if not url:
+    raise ValueError("STORAGE_URL environment variable or configuration file storage.conf in user directory"
+                     " should be set to value like 'storage://[username:password@]host1[:port1][,host2[:port2]"
+                     ",...[,hostN[:portN]]][/[database][?options]]'")
 
   try:
     command = args.pop(0)
   except IndexError:
     raise ValueError("No command provided!")
 
-  db = StorageFactory.get(mongodb_url)
+  db = StorageFactory.get(url)
   db.connect()
 
   bucket = None
@@ -397,7 +467,7 @@ def help_command():
   print("Supported commands: {}".format(StorageCommands))
 
 
-if __name__ == "__main__":
+def main_entry():
   args = list(sys.argv)
   args.pop(0)
 
@@ -410,16 +480,20 @@ if __name__ == "__main__":
       print(str(e))
       sys.exit(-1)
     except Exception:
-     if "pydev" in os.environ.get("PYTHONPATH", ""):  # do not handle it if we running from IDE
-       raise
+      if "pydev" in os.environ.get("PYTHONPATH", ""):  # do not handle it if we running from IDE
+        raise
 
-     import traceback
-     track = traceback.format_exc()
-     print("////// TRACKBACK")
-     print(track)
-     print("/////  END")
-     print("\n\n")
-     help_command()
-     sys.exit(-1)
+      import traceback
+      track = traceback.format_exc()
+      print("////// TRACKBACK")
+      print(track)
+      print("/////  END")
+      print("\n\n")
+      help_command()
+      sys.exit(-1)
+
+
+if __name__ == "__main__":
+  main_entry()
 
 

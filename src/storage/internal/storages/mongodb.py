@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Dict, Iterable, List
 
-from storages.generic import GenericStorage, StorageCredentials, FileItemRecord, SizeScale, BucketItemRecord, FileIn, \
+from .generic import GenericStorage, StorageCredentials, FileItemRecord, SizeScale, BucketItemRecord, FileIn, \
   FileOut
 
 import gridfs
