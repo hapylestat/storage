@@ -7,11 +7,12 @@ import hashlib
 from threading import Thread
 
 # ====================================== CLASSES ==========================================
+from storage.internal.configuration import Configuration
 from storage.internal.storages import StorageFactory, GenericStorage
 from storage.internal.storages.generic import SizeScale
 
 
-__version__ = "1.0.0b0"
+__version__ = "1.0.1b1"
 
 
 class Metaclass(object):
@@ -344,6 +345,25 @@ def stats_cmd(ctx):
     print("{}{}: {}".format(k, " " * fill_size, v))
 
 
+def select_storage(cfg: Configuration):
+  url_list = cfg.connection_url_list
+
+  for i in range(0, len(url_list)):
+    print("{}. {}".format(i, url_list[i]))
+
+  print("--------")
+  i = input("Please choose: ")
+  try:
+    i = int(i)
+    if i < len(url_list):
+      cfg.connection_url_index = i
+      print("/// OK")
+    else:
+      raise TypeError("Too big index")
+  except TypeError as e:
+    print("Error. {}".format(e))
+
+
 # ====================================== BASE STUFF ==========================================
 AVAILABLE_COMMANDS = {
   StorageCommands.list_cmd: list_cmd,
@@ -354,74 +374,10 @@ AVAILABLE_COMMANDS = {
 }
 
 
-def get_connection_url():
-  url = os.environ.get("STORAGE_URL", None)
-  if url:
-    return url
-
-  import sys
-  if sys.platform.startswith('java'):
-    import platform
-    os_name = platform.java_ver()[3][0]
-    if os_name.startswith('Windows'):
-      system = 'win32'
-    elif os_name.startswith('Mac'):
-      system = 'darwin'
-    else:
-      system = 'linux2'
-  else:
-    system = sys.platform
-
-  def user_data_dir(appname=None, appauthor=None, version=None):
-    if system == "win32":
-      if appauthor is None:
-        appauthor = appname
-
-      path = os.path.normpath(os.getenv("LOCALAPPDATA", None))
-      if appname:
-        if appauthor is not False:
-          path = os.path.join(path, appauthor, appname)
-        else:
-          path = os.path.join(path, appname)
-    elif system == 'darwin':
-      path = os.path.expanduser('~/Library/Application Support/')
-      if appname:
-        path = os.path.join(path, appname)
-    else:
-      path = os.getenv('XDG_DATA_HOME', os.path.expanduser("~/.local/share"))
-      if appname:
-        path = os.path.join(path, appname)
-    if appname and version:
-      path = os.path.join(path, version)
-
-    return path
-
-  def user_config_dir(appname=None, appauthor=None, version=None):
-    if system == "win32":
-      path = user_data_dir(appname, appauthor, None)
-    elif system == 'darwin':
-      path = os.path.expanduser('~/Library/Preferences/')
-      if appname:
-        path = os.path.join(path, appname)
-    else:
-      path = os.getenv('XDG_CONFIG_HOME', os.path.expanduser("~/.config"))
-      if appname:
-        path = os.path.join(path, appname)
-    if appname and version:
-      path = os.path.join(path, version)
-    return path
-
-  config = os.path.join(user_config_dir("storage", appauthor=False), "storage.conf")
-  try:
-    with open(config, 'r') as f:
-      return f.readline().strip(os.linesep)
-  except IOError:
-    return None
-
-
 def main(args):
-  url = get_connection_url()
-  if not url:
+  cfg = Configuration()
+
+  if not cfg.connection_url:
     raise ValueError("STORAGE_URL environment variable or configuration file storage.conf in user directory"
                      " should be set to value like 'storage://[username:password@]host1[:port1][,host2[:port2]"
                      ",...[,hostN[:portN]]][/[database][?options]]'")
@@ -431,10 +387,13 @@ def main(args):
   except IndexError:
     raise ValueError("No command provided!")
 
-  db = StorageFactory.get(url)
-  db.connect()
+  if command == "conn":  # ToDo: integrate command more nicely
+    select_storage(cfg)
+    return
 
   bucket = None
+  db = StorageFactory.get(cfg.connection_url)
+  db.connect()
 
   if command in StorageCommands.bucket_consumers:  # if yes, second argument should be database name
     try:

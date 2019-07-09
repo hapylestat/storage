@@ -247,6 +247,7 @@ class MinIOStorage(GenericStorage):
       yield FileItemRecord(fobj.object_name, fobj.object_name, SizeScale(fobj.size), fobj.last_modified, hash_value, f)
 
   def new_file(self, bucket: str, filename: str) -> FileIn:
+    # ToDo: implement this
     pass
 
   def delete(self, bucket: str, f: FileItemRecord or object):
