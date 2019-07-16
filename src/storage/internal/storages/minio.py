@@ -1,7 +1,7 @@
 import json
 from io import StringIO, BytesIO
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Union, Any
 
 from urllib3 import HTTPResponse
 
@@ -191,6 +191,52 @@ class MinioStreamOutProxy(FileOut):
     return self.__enter__()
 
 
+class MinIOStreamInProxy(FileIn):
+
+  def __init__(self, client: Minio, bucket_name: str, filename: str, chunk_size: int):
+    from minio import helpers
+    super(MinIOStreamInProxy, self).__init__(chunk_size)
+    self._client = client
+    self._bucket_name = bucket_name
+    self._filename = filename
+    self._headers = {
+      "Content-Type": "application/octet-stream",
+      "x-amz-metadata-directive": "REPLACE"
+    }
+
+    self._headers = helpers.amzprefix_user_metadata(self._headers)
+    self._uploadid = None
+    self._part_number = 1
+    self._uploaded_parts = []
+
+  def close(self) -> None:
+    pass
+
+  # ToDo: prototype from _stream_put_object
+  def write(self, b: Union[bytes, bytearray]) -> int:
+    if not self._uploadid:
+      self._uploadid = self._client._new_multipart_upload(self._bucket_name, self._filename, self._headers)
+
+    total_read = 0
+    try:
+     part_number, etag, total_read = self._client._do_put_object(self._bucket_name, self._filename, self._uploadid,
+                                                                 self._part_number, b, None, None)
+    except:
+      return total_read
+
+    self._part_number += 1
+    return total_read
+
+  def writelines(self, lines: Any) -> None:
+    pass
+
+  def __enter__(self):
+    pass
+
+  def __exit__(self, *args, **kwargs):
+    pass
+
+
 class MinIOStorage(GenericStorage):
   _client: Minio = None
   _webrpc: MinIOWebRPC = None
@@ -248,6 +294,7 @@ class MinIOStorage(GenericStorage):
 
   def new_file(self, bucket: str, filename: str) -> FileIn:
     # ToDo: implement this
+    self._client.put_object()
     pass
 
   def delete(self, bucket: str, f: FileItemRecord or object):

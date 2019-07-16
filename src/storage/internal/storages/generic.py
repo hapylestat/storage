@@ -108,23 +108,27 @@ class FileOut(BytesIO):
 
 
 class FileIn(BytesIO):
-  def __init__(self, chunk_size: int, fid: LambdaType, hash_value: LambdaType, f):
+  def __init__(self, chunk_size: int, fid: LambdaType = None, hash_value: LambdaType = None, f: BytesIO = None):
     def ex():
       raise NotImplementedError()
 
     super().__init__()
 
     self.chunk_size = chunk_size
-    self._fid = fid
-    self._hash_value = hash_value
+    if fid is not None:
+      self._fid = fid
 
-    # overrides
-    self.close = f.close
-    self.write = f.write
-    self.writelines = f.writelines
+    if hash_value is not None:
+      self._hash_value = hash_value
 
-    self.__enter__ = f.__enter__
-    self.__exit__ = f.__exit__
+    if f is not None:
+      # overrides
+      self.close = f.close
+      self.write = f.write
+      self.writelines = f.writelines
+
+      self.__enter__ = f.__enter__
+      self.__exit__ = f.__exit__
 
     self.readable = lambda: False
     self.read = lambda: ex()
