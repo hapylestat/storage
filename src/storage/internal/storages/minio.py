@@ -1,14 +1,16 @@
+import hashlib
 import json
 from io import StringIO, BytesIO
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Union, Any
+from typing import Dict, Iterable, List, Optional, Union
 
+from minio.definitions import UploadPart
 from urllib3 import HTTPResponse
 
 from . import GenericStorage
 from .generic import SizeScale, FileItemRecord, FileIn, BucketItemRecord, StorageCredentials, FileOut
 
-from minio import Minio
+from minio import Minio, helpers, signer
 
 
 class WebRPCActions(object):
@@ -192,10 +194,20 @@ class MinioStreamOutProxy(FileOut):
 
 
 class MinIOStreamInProxy(FileIn):
+  """
+  Class handles 2 scenarios:
+   - simple upload up to MIN_PART_SIZE
+   - multipart upload
+  """
 
-  def __init__(self, client: Minio, bucket_name: str, filename: str, chunk_size: int):
-    from minio import helpers
-    super(MinIOStreamInProxy, self).__init__(chunk_size)
+  def __init__(self, client: Minio, bucket_name: str, filename: str, chunk_size: int, size: int):
+    # basic checks
+    helpers.is_valid_bucket_name(bucket_name)
+    helpers.is_non_empty_string(bucket_name)
+
+    self._etag = None
+    self.__id = None
+    super(MinIOStreamInProxy, self).__init__(chunk_size, fid=lambda: self.__id, hash_value=lambda: None)
     self._client = client
     self._bucket_name = bucket_name
     self._filename = filename
@@ -205,36 +217,107 @@ class MinIOStreamInProxy(FileIn):
     }
 
     self._headers = helpers.amzprefix_user_metadata(self._headers)
-    self._uploadid = None
-    self._part_number = 1
-    self._uploaded_parts = []
+    try:
+      if size > helpers.MIN_PART_SIZE:
+        self._uploadid = self._client._new_multipart_upload(self._bucket_name, self._filename, self._headers)
+        self._part_number = 1
+        self._total_parts_count, self._part_size, self._last_part_size = helpers.optimal_part_info(size, chunk_size)
+        self._min_stream = None
+      else:
+        self._uploadid = ''
+        self._part_number = 0
+        self._min_stream = BytesIO()
+        self._total_parts_count, self._part_size, self._last_part_size = 0, 0, 0
+    except Exception as e:
+      raise IOError(e)
+
+    self._uploaded_parts = {}
+
+  def _do_put_object(self, part_data):
+    headers = {
+      'Content-Length': len(part_data),
+    }
+
+    if self._client._is_ssl:
+      headers['Content-Md5'] = helpers.get_md5_base64digest(part_data)
+      sha256_hex = signer._UNSIGNED_PAYLOAD
+    else:
+      sha256_hex = helpers.get_sha256_hexdigest(part_data)
+
+    query = {}
+    if self._part_number > 0 and self._uploadid:
+      query = {
+        'uploadId': self._uploadid,
+        'partNumber': str(self._part_number),
+      }
+
+    response = self._client._url_open(
+      'PUT',
+      bucket_name=self._bucket_name,
+      object_name=self._filename,
+      query=query,
+      headers=headers,
+      body=BytesIO(part_data),
+      content_sha256=sha256_hex,
+      preload_content=False
+    )
+
+    return response.headers['etag'].replace('"', '')
 
   def close(self) -> None:
-    pass
+    if self._min_stream:
+      val = self._min_stream.getvalue()
+      self._do_put_object(val)
+      return
 
-  # ToDo: prototype from _stream_put_object
-  def write(self, b: Union[bytes, bytearray]) -> int:
-    if not self._uploadid:
-      self._uploadid = self._client._new_multipart_upload(self._bucket_name, self._filename, self._headers)
-
-    total_read = 0
     try:
-     part_number, etag, total_read = self._client._do_put_object(self._bucket_name, self._filename, self._uploadid,
-                                                                 self._part_number, b, None, None)
-    except:
-      return total_read
+      self._client._complete_multipart_upload(self._bucket_name, self._filename, self._uploadid, self._uploaded_parts)
+    except Exception as e:
+      self._client._remove_incomplete_upload(self._bucket_name, self._filename, self._uploadid)
+      raise
+    self._uploadid = None
+    self._part_number = 1
+    self._uploaded_parts = {}
+    self.__id = self._filename
 
+  def write(self, b: Union[bytes, bytearray]) -> int:
+    if self._min_stream:
+      self._min_stream.write(b)
+      return len(b)
+
+    try:
+      etag = self._do_put_object(b)
+
+    except Exception as e:
+      raise IOError(e)
+
+    total_read = len(b)
+    self._uploaded_parts[self._part_number] = UploadPart(
+      self._bucket_name, self._filename, self._uploadid, self._part_number, etag, None, total_read
+    )
     self._part_number += 1
     return total_read
 
-  def writelines(self, lines: Any) -> None:
-    pass
+  def writelines(self, lines: Iterable) -> None:
+    b = BytesIO()
+    b.writelines(lines)
+    self.write(b.getvalue())
 
   def __enter__(self):
-    pass
+    self._headers = {
+      "Content-Type": "application/octet-stream",
+      "x-amz-metadata-directive": "REPLACE"
+    }
+
+    self._headers = helpers.amzprefix_user_metadata(self._headers)
+    self._uploadid = None
+    self._part_number = 1
+    self._uploaded_parts = {}
+    self._total_uploaded = 0
+    self.__hash = hashlib.md5()
 
   def __exit__(self, *args, **kwargs):
-    pass
+    self.close()
 
 
 class MinIOStorage(GenericStorage):
@@ -292,10 +375,8 @@ class MinIOStorage(GenericStorage):
       f = MinioStreamOutProxy(self._client, bucket, fobj.object_name, 1024 * 1024, fobj.size, hash_value)
       yield FileItemRecord(fobj.object_name, fobj.object_name, SizeScale(fobj.size), fobj.last_modified, hash_value, f)
 
-  def new_file(self, bucket: str, filename: str) -> FileIn:
-    # ToDo: implement this
-    self._client.put_object()
-    pass
+  def new_file(self, bucket: str, filename: str, size: int) -> FileIn:
+    return MinIOStreamInProxy(self._client, bucket, filename, helpers.MIN_PART_SIZE, size)
 
   def delete(self, bucket: str, f: FileItemRecord or object):
     if isinstance(f, FileItemRecord):

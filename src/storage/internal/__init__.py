@@ -184,7 +184,7 @@ def put_cmd(ctx):
     th = Thread(target=print_io_status, args=(filename, fsize, f))
     th.start()
 
-    stream = ctx.db.new_file(ctx.bucket_name, filename)
+    stream = ctx.db.new_file(ctx.bucket_name, filename, fsize)
 
     chunk_size = stream.chunk_size
     total_chunked_size = int(fsize / chunk_size) * chunk_size
@@ -216,7 +216,7 @@ def put_cmd(ctx):
     th.join()
 
   sys.stdout.write("\r" + " "*80)
-  if stream.hash_value != hash.hexdigest():
+  if stream.hash_value and stream.hash_value != hash.hexdigest():
     ctx.db.delete(ctx.bucket_name, stream._id)
     print("\r{}".format("failed, local hash_value didn't match server one"))
   else:

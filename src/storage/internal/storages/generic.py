@@ -209,7 +209,7 @@ class GenericStorage(object):
   def list(self, bucket: str, filename: str or None = None) -> Iterable[FileItemRecord]:
     raise NotImplementedError()
 
-  def new_file(self, bucket: str, filename: str) -> FileIn:
+  def new_file(self, bucket: str, filename: str, size: int) -> FileIn:
     raise NotImplementedError()
 
   def delete(self, bucket: str, f: FileItemRecord or object):

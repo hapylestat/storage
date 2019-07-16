@@ -118,7 +118,7 @@ class MongoStorage(GenericStorage):
 
       yield FileItemRecord(f._id, f.filename, SizeScale(f_out.size), f.upload_date, f.md5, f_out)
 
-  def new_file(self, bucket: str, filename: str) -> FileIn:
+  def new_file(self, bucket: str, filename: str, size: int) -> FileIn:
     fs = self._fs(bucket)
     f = fs.new_file(filename=filename)
     return FileIn(f.chunk_size, lambda: f._id, lambda: f.hash_value, f)
