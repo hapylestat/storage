@@ -68,7 +68,8 @@ def list_buckets_command(ctx):
   buckets = ctx.db.bucket_list()
 
   for bucket in buckets:
-
+    if not bucket.size:
+      bucket.size = SizeScale(0)
     print(f"{bucket.files:032d} d {bucket.size.size:7.2f} {bucket.size.scale_name} {bucket.date} {bucket.name}")
 
 
