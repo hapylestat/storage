@@ -121,7 +121,7 @@ class MongoStorage(GenericStorage):
   def new_file(self, bucket: str, filename: str, size: int) -> FileIn:
     fs = self._fs(bucket)
     f = fs.new_file(filename=filename)
-    return FileIn(f.chunk_size, lambda: f._id, lambda: f.hash_value, f)
+    return FileIn(f.chunk_size, lambda: f._id, lambda: f.md5, f)
 
   def delete(self, bucket: str, f: FileItemRecord or str):
     fs = self._fs(bucket)
