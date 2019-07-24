@@ -80,6 +80,10 @@ class Configuration(object):
       return
 
   def __get_connection_index(self):
+    url = os.environ.get("STORAGE_URL", None)
+    if url:
+      return 0
+
     config = os.path.join(self.__user_config_dir("storage", appauthor=False), "storage.setting")
     try:
       with open(config, 'r') as f:
